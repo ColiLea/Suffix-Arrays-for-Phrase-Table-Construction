@@ -4,84 +4,84 @@ import "fmt"
 import "textprocessing"
 import "io/ioutil"
 import "strings"
+import "os"
+import "runtime/pprof"
 
 //get sentenceIndices and Text from corpus
-func preprocess(fileName string) (sentenceIndices []int, sourceText *textprocessing.Text) {
+func preprocess(fileName string) (wordIndices []int, sentenceIndices [][2]int, sourceText *textprocessing.Text) {
 	sourceText = &textprocessing.Text{}
 	rawText, _ := ioutil.ReadFile(fileName)
 	sentences := strings.Split(string(rawText), "\n", -1)
-	sentenceTexts := make([]textprocessing.Text, len(sentences))
-	corpusLength := 0
+	sentenceCount := len(sentences)
+	sentenceTexts := make([]textprocessing.Text, sentenceCount)
+	wordCount := 0
 	for idx, sentence := range sentences {
 		sentenceTexts[idx] = *textprocessing.NewText(sentence)
-		corpusLength += sentenceTexts[idx].Length()
+		wordCount += sentenceTexts[idx].Length()
 	}
-	sentenceIndices = make([]int, 0, corpusLength)
-	input := make([]textprocessing.Word, 0, corpusLength)
+	wordIndices = make([]int, 0, wordCount)
+	sentenceIndices = make([][2]int, 0, sentenceCount)
+	input := make([]textprocessing.Word, 0, wordCount)
+	sentenceIndex := 0
 	for idx, sentence := range sentenceTexts {
 		for ii := 0; ii < sentence.Length(); ii++ {
-			sentenceIndices = append(sentenceIndices, idx)
+			wordIndices = append(wordIndices, idx)
 		}
+		sentenceIndices = append(sentenceIndices, [2]int{sentenceIndex, sentenceIndex+sentence.Length()})
+		sentenceIndex = sentenceIndex + sentence.Length()
 		input = append(input, sentence...)
 	}
 	*sourceText = textprocessing.Text(input)
 	return
 }
 
-func main() {
-	
-	sentenceIndicesSource, sourceText := preprocess("/home/lea/corpora/german_test")
-
-	//get suffixArrays(source + target), LCP(source)
-	suffixArraySource := textprocessing.NewSuffixArray(sourceText)
-	sentenceIndicesTarget, targetText := preprocess("/home/lea/corpora/english_test")
-	lcp := suffixArraySource.Lcp()
-	starts, occs := suffixArraySource.GetSubstrings(lcp, 5, 3)
-	textIndices := suffixArraySource.GetSlicesTokenIndices(starts, occs)
-
-
-//	get alignments:
-//	1) get sentence indices for found substrings
-	substringPositions := make([][]int, len(textIndices))
+func GetSubstringSentenceNumbers(textIndices [][]int, wordIndices []int) (substringPositions [][]int) {
+	substringPositions = make([][]int, len(textIndices))
 	for idx, tokenIndices := range textIndices {
 		substringPositions[idx] = make([]int, len(tokenIndices))
 		for index, _ := range tokenIndices {
-			substringPositions[idx][index] = sentenceIndicesSource[tokenIndices[index]]
+			substringPositions[idx][index] = wordIndices[tokenIndices[index]]
 		}
 	}
-	
-/*	fmt.Println(suffixArraySource)
-	fmt.Println(substringPositions)
-	fmt.Println(textIndices)*/
-//	fmt.Println(substringPositions)
+	return
+}
 
-	//look at an example for every matching substring + #occurences
- /*	for idx, _ := range starts {
-		textIndex := suffixArraySource.GetTokenIndex(starts[idx])
-		fmt.Println((*sourceText)[textIndex:textIndex+3], occs[idx])
-	}*/
+func main() {
 	
-	//recover sentences
-	//output: {substr, sentence_german, sentence_english}
-	for idx, tokenIndices := range textIndices {
-		for index, start := range tokenIndices {
-			var sourceSentence []textprocessing.Word
-			var targetSentence []textprocessing.Word
-			for id, el := range sentenceIndicesSource {
-				if el == substringPositions[idx][index] {
-					sourceSentence = append(sourceSentence, (*sourceText)[id])
+	f, _ := os.Create("cpuprofile")
+
+	//get suffixArrays(source + target), LCP(source)
+	fmt.Println("preprocessing source...")
+	wordIndicesSource, sentenceIndicesSource, sourceText := preprocess("./german")
+	fmt.Println("done")
+	fmt.Println("preprocessing target...")
+	_, sentenceIndicesTarget, targetText := preprocess("./english")
+	fmt.Println("done")
+	fmt.Println("constructing suffix array...")
+	suffixArraySource := textprocessing.NewSuffixArray(sourceText)
+	fmt.Println("done")
+	lcp := suffixArraySource.Lcp()
+	
+	pprof.StartCPUProfile(f)
+	// print systematically
+	for length :=3; length >=3; length-- {
+		for minOcc :=3; minOcc >=3; minOcc-- {
+			fmt.Println(length, minOcc)
+			file, _ := os.Create(fmt.Sprintf("L%03dF%03d.dat",length,minOcc))
+			starts, occs := suffixArraySource.GetSubstrings(lcp, length, minOcc)
+			//get starting point for each substring
+			substringStartIndices := suffixArraySource.GetSlicesTokenIndices(starts, occs)
+			//get corresp sentence number for each matching substring
+			sentencesOfSubstringOccurrence := GetSubstringSentenceNumbers(substringStartIndices, wordIndicesSource)
+			for idx, substringType := range sentencesOfSubstringOccurrence {
+				for index, start := range substringType {
+					startPosition := substringStartIndices[idx][index]
+					fmt.Fprint(file, "string", (*sourceText)[startPosition:startPosition+length], occs[idx], "\n")
+					fmt.Fprint(file, "german", (*sourceText)[sentenceIndicesSource[start][0]:sentenceIndicesSource[start][1]], "\n")
+					fmt.Fprint(file, "english", (*targetText)[sentenceIndicesTarget[start][0]:sentenceIndicesTarget[start][1]], "\n\n")
 				}
 			}
-			for id, el := range sentenceIndicesTarget {
-				if el == substringPositions[idx][index] {
-					targetSentence = append(targetSentence, (*targetText)[id])
-				}
-			}
-			fmt.Println("substring", (*sourceText)[start:start+5], occs[idx])
-			fmt.Println("german", sourceSentence)
-			fmt.Println("english", targetSentence,"\n\n")
 		}
-
 	}
-
+	defer pprof.StopCPUProfile()
 }
